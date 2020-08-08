@@ -40,54 +40,108 @@ MQTT_HOST = IPADDRESS
 MQTT_PORT = 3001
 MQTT_KEEPALIVE_INTERVAL = 60
 
-# Classification labels used by the model in the exact order
-classes = ["Unknown", "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant","street sign", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "hat", "backpack", "umbrella", "shoe", "eye glasses", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "plate", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "mirror", "dining table", "window", "desk", "toilet", "door", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "blender", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush", "hair brush"]
+# People detection statistics metrics
+total_people_count = 0
+current_people_count = 0
+current_entry_time = 0
+current_exit_time = 0
+current_duration = 0
+potential_exit = False
 
+def people_counter_update(count, frame_time, time_gap_threshold):
+    """
+    Update statistics per frame
+    To counter mis-detection, a predetermined time windows is used to test whther the
+    disappearance of a people from frame is a real one. If a detection happens within
+    the window that means the previous disappearance is a false one. Otherwise the
+    previous exit is counted as a real one.
+  
+    input: 
+    count: count of people in current frame
+    frame_time: time stamp
+    time_gap_threshold: predetermined threshold to deermine with an exit is real
+
+    output:
+    None
+    """
+    global total_people_count
+    global current_people_count
+    global current_entry_time
+    global current_exit_time
+    global current_duration
+    global potential_exit
+  
+    # Detected people entering frame
+    if count > current_people_count:
+        if potential_exit:
+            # Check if the gap is over threshold, if yes then real exit
+            if (time.time() - current_exit_time) > time_gap_threshold:
+                print("Exceed time gap. Real entry")
+                potential_exit = False
+                total_people_count = total_people_count + count - current_people_count
+                current_entry_time = frame_time
+            # else continue
+            else:
+                print("Under time gap. Continue")
+                pass
+        else:
+            total_people_count = total_people_count + count - current_people_count
+            current_entry_time = frame_time
+        print("People enter. Total count: " + str(total_people_count) + " at time:" + str(current_entry_time))
+    # Detected people exiting frame
+    elif count < current_people_count:
+        if not potential_exit:
+            potential_exit = True
+            current_exit_time = frame_time
+            current_duration = current_exit_time - current_entry_time
+            print("People exit. Duration: " + str(current_duration) + " at time:" + str(current_exit_time))        
+    # No change in the number of people in frame
+    else:
+        if potential_exit and (time.time() - current_exit_time) > time_gap_threshold:
+            potential_exit = False
+            current_duration = current_exit_time - current_entry_time
+
+    # Update counter for people currently in frame
+    current_people_count = count
 
 def draw_boxes(frame, result, prob_threshold, width, height):
     """
     Draw bounding boxes to the frame
     
-    Params
+    input:
     frame: frame from camera/video
     result: list contains the result of inference
     
-    return
+    output:
     frame: frame with bounding box drawn on it
     """
     start_point = None
     end_point = None
     thickness = 5
-    color = (255, 86, 0)
+    color = (0, 255, 0)
     
+    # Draw bounding box around detected person
     for box in result[0][0]: 
         if box[2] > prob_threshold:
             start_point = (int(box[3] * width), int(box[4] * height))
             end_point = (int(box[5] * width), int(box[6] * height))
             frame = cv2.rectangle(frame, start_point, end_point, color, thickness)
-            box_label = '{}: {:.2f}%'.format(classes[int(box[1])], box[2] * 100)
+            box_label = '{}: {:.2f}%'.format("people", box[2] * 100)
             frame = cv2.putText(frame, box_label , (int(box[3] * width)+ 5, int(box[4] * height) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 86, 0), 2)
             
     return frame
 
 def person_count_per_frame(result, prob_threshold):
     """
-    Counts number of people in a frame
-    
-    params
-    result: list contains the result of inference
-    
-    return
-    count: count of number of people in a frame
-    """
-    count = 0
-    
-    for box in result[0][0]:
-        confidence = box[2]
-        
-        if confidence > prob_threshold:
-            count += 1
-    return count
+    Counts number of people in a frame based on confidence threshold
+
+    input:
+    result: inference results
+    prob_threshold: detenction probablity thresholds
+
+    output: Total number of people in frame
+    """ 
+    return sum (1 for i in result if i[0][0][2] > prob_threshold)
 
 def build_argparser():
     """
@@ -150,6 +204,7 @@ def infer_on_stream(args, client):
     ### TODO: Handle the input stream ###
     single_image_mode = False
 
+    # if the input is a live feed such as webcam, set import to port 0
     if args.input == 'CAM':
         inference_input = 0
     else:
@@ -165,7 +220,15 @@ def infer_on_stream(args, client):
         #else:
         #    asssert 1, "[ERROR]: Unknown input file format!"        
 
-   
+    # Specify the timeing gap to filter out false mis-detections
+    if prob_threshold <= 0.4:
+        time_gap_threshold = 4
+    elif prob_threshold <= 0.6:
+        time_gap_threshold = 10
+    else:
+        time_gap_threshold = 15
+    print("Time gap threshold: " + str(time_gap_threshold))  
+    
     cap = cv2.VideoCapture(inference_input)
     cap.open(inference_input)
 
@@ -174,19 +237,11 @@ def infer_on_stream(args, client):
     height = int(cap.get(4))
 
     # Create a video writer for the output video
-    # The second argument should be `cv2.VideoWriter_fourcc('M','J','P','G')`
-    # on Mac, and 'cv2.VideoWriter_fourcc('m','p','4','v')' on Linux
     if not single_image_mode:
         out_video = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc('m','p','4','v'), 30, (width,height))
 
-    report_count = 0
-    count = 0
-    prev_count = 0
-    prev_duration = 0
-    total_count = 0
-    duration = 0
- 
     ### TODO: Loop until stream is over ###
+    print("Starting inferencing..")
     while cap.isOpened():
 
         ### TODO: Read from the video capture ###
@@ -225,37 +280,24 @@ def infer_on_stream(args, client):
             ### current_count, total_count and duration to the MQTT server ###
             ### Topic "person": keys of "count" and "total" ###
             ### Topic "person/duration": key of "duration" ###
-            person_count = person_count_per_frame(output,args.prob_threshold)
-            
-            if person_count != count:
-                prev_count = count
-                count = person_count
-                
-                if duration >= 3:
-                    prev_duration = duration
-                    duration = 0
-                else:
-                    duration += prev_duration
-                    prev_duration = 0    #unknown, not needed
-            else:
-                duration += 1
-                if duration >= 3:
-                    report_count = count
-                    if duration == 3 and count > prev_count:
-                        total_count += count - prev_count
-                    elif duration == 3 and count < prev_count:
-                        report_duration = int((prev_duration/10.0) * 1000)
-            
-            
-            client.publish("person", json.dumps({"count" : report_count, "total" : total_count}), qos = 0, retain = False)
-            if report_duration is not None:
-                client.publish("person/duration", json.dumps({"duration" : report_duration}), qos = 0, retain = False)
+            current_people_count = person_count_per_frame(output,args.prob_threshold)
+            current_time = time.time()
+
+            # run update function per frame
+            people_counter_update(current_people_count, current_time, time_gap_threshold)
+
+            client.publish("person/duration", json.dumps({"duration" : 10}))
+            client.publish("person", json.dumps({"count" : 8, "total" : 8}))           
+            #client.publish("person", json.dumps({"count" : report_count, "total" : total_count}), qos = 0, retain = False)
+            #client.publish("person", json.dumps({"count" : report_count}), qos = 0, retain = False) 
+            #if report_duration is not None:
+            #    client.publish("person/duration", json.dumps({"duration" : report_duration}), qos = 0, retain = False)
 
         ### TODO: Send the frame to the FFMPEG server ###
             bounded_frame = cv2.resize(bounded_frame, (width, height))
-            sys.stdout.buffer.write(bounded_frame)
-            sys.stdout.flush()
-            #cv2.imshow('Frame', bounded_frame)
+            #sys.stdout.buffer.write(bounded_frame)
+            #sys.stdout.flush()
+            cv2.imshow('Frame', bounded_frame)
 
         ### TODO: Write an output image if `single_image_mode` ###
             if single_image_mode:
@@ -265,8 +307,9 @@ def infer_on_stream(args, client):
                 #print("Writing to video file")
                 out_video.write(bounded_frame)
 
+    print("Complete at: " + str(time.time()))
+
     # All done. Clean up
-    #print("All done. Cleaning up")
     out_video.release()
     cap.release()
     cv2.destroyAllWindows()

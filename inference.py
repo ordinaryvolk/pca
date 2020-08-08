@@ -47,7 +47,7 @@ class Network:
         ### TODO: Load the model ###
         self.plugin = IECore()
         model_bin = os.path.splitext(model_xml)[0] + ".bin"
-        self.network = IENetwork(model=model_xml, weights=model_bin)
+        self.network = self.plugin.read_network(model=model_xml, weights=model_bin)
 
         ### TODO: Check for supported layers ###
         supported_layers = self.plugin.query_network(network=self.network, device_name=device)
@@ -66,17 +66,22 @@ class Network:
         self.net_plugin = self.plugin.load_network(self.network, device)
 
         # Get the input layer
-        self.input_blob = next(iter(self.network.inputs))
+        self.input_blob = next(iter(self.network.input_info))
         self.output_blob = next(iter(self.network.outputs))
 
+        #print(self.network.input_info)
+        #print(self.network.outputs)
+        #print(self.input_blob)
+        #print(self.output_blob)
         return self.net_plugin
 
     def get_input_shape(self):
         ### TODO: Return the shape of the input layer ###
 
         input_shapes = {}
-        for network_input in self.network.inputs:
-            input_shapes[network_input] = (self.network.inputs[network_input].shape)
+        for network_input in self.network.input_info:
+            input_shapes[network_input] = (self.network.input_info[network_input].input_data.shape)
+ 
         return input_shapes
 
         #return self.network.inputs[self.input_blob].shape
@@ -92,7 +97,7 @@ class Network:
         ### TODO: Wait for the request to be complete. ###
         ### TODO: Return any necessary information ###
         ### Note: You may need to update the function parameters. ###
-        return self.infer_request_handle.wait()
+        return self.infer_request_handle.wait(-1)
 
     def get_output(self):
         ### TODO: Extract and return the output results
