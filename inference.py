@@ -25,7 +25,7 @@
 import os
 import sys
 import logging as log
-from openvino.inference_engine import IENetwork, IECore
+from openvino.inference_engine import IENetwork, IEPlugin
 
 
 class Network:
@@ -43,14 +43,18 @@ class Network:
         self.output_blob = None
         self.infer_request_handle = None
  
-    def load_model(self, model_xml, device):
+    def load_model(self, model_xml, device, cpu_extension, num_requests):
         ### TODO: Load the model ###
-        self.plugin = IECore()
+        self.plugin = IEPlugin(device=device)
         model_bin = os.path.splitext(model_xml)[0] + ".bin"
-        self.network = self.plugin.read_network(model=model_xml, weights=model_bin)
+        self.network = IENetwork(model=model_xml, weights=model_bin)
+
+        # Add CPU extension only for CPU device
+        if cpu_extension and 'CPU' in device:
+            self.plugin.add_cpu_extension(cpu_extension)
 
         ### TODO: Check for supported layers ###
-        supported_layers = self.plugin.query_network(network=self.network, device_name=device)
+        supported_layers = self.plugin.get_supported_layers(self.network)
 
         unsupported_layers = [l for l in self.network.layers.keys() if l not in supported_layers]
         if len(unsupported_layers) != 0:
@@ -60,46 +64,50 @@ class Network:
 
         ### TODO: Add any necessary extensions ###
         ### Not needed as my local openvino is 2020.R4
+        #if cpu_extension and 'CPU' in device:
+        #    self.plugin.add_cpu_extension(cpu_extension)
 
         ### TODO: Return the loaded inference plugin ###
         ### Note: You may need to update the function parameters. ###
-        self.net_plugin = self.plugin.load_network(self.network, device)
+        self.net_plugin = self.plugin.load(network=self.network, num_requests=num_requests)
 
         # Get the input layer
-        self.input_blob = next(iter(self.network.input_info))
+        self.input_blob = next(iter(self.network.inputs))
         self.output_blob = next(iter(self.network.outputs))
 
-        #print(self.network.input_info)
-        #print(self.network.outputs)
-        #print(self.input_blob)
-        #print(self.output_blob)
         return self.net_plugin
 
     def get_input_shape(self):
         ### TODO: Return the shape of the input layer ###
 
-        input_shapes = {}
-        for network_input in self.network.input_info:
-            input_shapes[network_input] = (self.network.input_info[network_input].input_data.shape)
- 
-        return input_shapes
 
-        #return self.network.inputs[self.input_blob].shape
+        input_shapes = {}
+        for input in self.network.inputs:
+            input_shapes[input] = (self.network.inputs[input].shape)
+        return input_shapes
 
     def exec_net(self, request_id, network_input):
         ### TODO: Start an asynchronous request ###
         ### TODO: Return any necessary information ###
         ### Note: You may need to update the function parameters. ###
-        self.infer_request_handle = self.net_plugin.start_async(request_id, inputs = network_input) 
+        self.infer_request_handle = self.net_plugin.start_async(request_id, inputs = network_input)
         return
 
-    def wait(self):
+    def wait(self, request_id):
         ### TODO: Wait for the request to be complete. ###
         ### TODO: Return any necessary information ###
         ### Note: You may need to update the function parameters. ###
-        return self.infer_request_handle.wait(-1)
+        return self.net_plugin.requests[request_id].wait(-1)
 
-    def get_output(self):
+    def get_output(self, request_id):
         ### TODO: Extract and return the output results
         ### Note: You may need to update the function parameters. ###
-        return self.net_plugin.requests[0].outputs[self.output_blob]
+        return self.net_plugin.requests[request_id].outputs[self.output_blob]
+
+    def performance_counter(self, request_id):
+        """
+        Get performance counter 
+        """
+        perf_count = self.net_plugin.requests[request_id].get_perf_counts()
+        return perf_count
+    

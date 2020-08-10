@@ -45,8 +45,12 @@ total_people_count = 0
 current_people_count = 0
 current_entry_time = 0
 current_exit_time = 0
-current_duration = 0
+total_duration = 0
 potential_exit = False
+frame_count = 0
+
+# Time per frame in seconds based on ffmeg return of video file: ffmpeg -i <File>
+time_per_frame = 0.1
 
 def people_counter_update(count, frame_time, time_gap_threshold):
     """
@@ -68,66 +72,69 @@ def people_counter_update(count, frame_time, time_gap_threshold):
     global current_people_count
     global current_entry_time
     global current_exit_time
-    global current_duration
+    global total_duration
     global potential_exit
-  
+
     # Detected people entering frame
     if count > current_people_count:
         if potential_exit:
             # Check if the gap is over threshold, if yes then real exit
-            if (time.time() - current_exit_time) > time_gap_threshold:
-                print("Exceed time gap. Real entry")
+            if (frame_time - current_exit_time) > time_gap_threshold:
+                #print("Exceed time gap. Real entry")
                 potential_exit = False
                 total_people_count = total_people_count + count - current_people_count
+                total_duration = total_duration + (current_exit_time - current_entry_time)* time_per_frame 
                 current_entry_time = frame_time
+                current_exit_time = None
             # else continue
             else:
-                print("Under time gap. Continue")
-                pass
+                #print("Under time gap. Continue")
+                current_exit_time = None
+                potential_exit = False
         else:
             total_people_count = total_people_count + count - current_people_count
             current_entry_time = frame_time
-        print("People enter. Total count: " + str(total_people_count) + " at time:" + str(current_entry_time))
+            current_exit_time = None
+            #print("People enter. Total count: " + str(total_people_count) + " at time:" + str(current_entry_time))
     # Detected people exiting frame
     elif count < current_people_count:
-        if not potential_exit:
-            potential_exit = True
-            current_exit_time = frame_time
-            current_duration = current_exit_time - current_entry_time
-            print("People exit. Duration: " + str(current_duration) + " at time:" + str(current_exit_time))        
+        potential_exit = True
+        current_exit_time = frame_time
+        #print("Pending exit.  "  + " at time:" + str(current_exit_time))        
     # No change in the number of people in frame
     else:
-        if potential_exit and (time.time() - current_exit_time) > time_gap_threshold:
+        if potential_exit and (frame_time - current_exit_time) > time_gap_threshold:
             potential_exit = False
-            current_duration = current_exit_time - current_entry_time
+            total_duration = total_duration + (current_exit_time - current_entry_time)* time_per_frame
+            current_exit_time = None
 
     # Update counter for people currently in frame
     current_people_count = count
 
-def draw_boxes(frame, result, prob_threshold, width, height):
+def draw_bounding_boxes(frame, result, prob_threshold, width, height):
     """
     Draw bounding boxes to the frame
     
     input:
-    frame: frame from camera/video
-    result: list contains the result of inference
+    frame: input frame 
+    result: inferencing results
     
     output:
-    frame: frame with bounding box drawn on it
+    frame: frame with bounding boxes
     """
-    start_point = None
-    end_point = None
-    thickness = 5
+    thickness = 2
     color = (0, 255, 0)
     
     # Draw bounding box around detected person
-    for box in result[0][0]: 
-        if box[2] > prob_threshold:
-            start_point = (int(box[3] * width), int(box[4] * height))
-            end_point = (int(box[5] * width), int(box[6] * height))
-            frame = cv2.rectangle(frame, start_point, end_point, color, thickness)
-            box_label = '{}: {:.2f}%'.format("people", box[2] * 100)
-            frame = cv2.putText(frame, box_label , (int(box[3] * width)+ 5, int(box[4] * height) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 86, 0), 2)
+    for detected in result[0][0]: 
+        if detected[2] > prob_threshold:
+            xmin = int(detected[3] * width)
+            ymin = int(detected[4] * height)
+            xmax = int(detected[5] * width)
+            ymax = int(detected[6] * height)
+            frame = cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, thickness)
+            label = '{}: {:.2f}%'.format("People", detected[2] * 100)
+            frame = cv2.putText(frame, label , (xmin , ymin), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 86, 0), 2)
             
     return frame
 
@@ -186,6 +193,11 @@ def infer_on_stream(args, client):
     :param client: MQTT client
     :return: None
     """
+    global frame_count
+
+    # use fixed request id
+    current_request_id = 0
+
     # Initialise the class
     infer_network = Network()
     # Set Probability threshold for detections
@@ -194,7 +206,8 @@ def infer_on_stream(args, client):
     ### TODO: Load the model through `infer_network` ###
     model = args.model
     device = args.device
-    infer_network.load_model(model, device)
+    cpu_extension = args.cpu_extension
+    infer_network.load_model(model, device, cpu_extension, current_request_id)
     network_shape = infer_network.get_input_shape()
 
     #print(network_shape)
@@ -222,12 +235,12 @@ def infer_on_stream(args, client):
 
     # Specify the timeing gap to filter out false mis-detections
     if prob_threshold <= 0.4:
-        time_gap_threshold = 4
+        time_gap_threshold = 10 
     elif prob_threshold <= 0.6:
-        time_gap_threshold = 10
+        time_gap_threshold = 30 
     else:
-        time_gap_threshold = 15
-    print("Time gap threshold: " + str(time_gap_threshold))  
+        time_gap_threshold = 40
+    #print("Time gap threshold: " + str(time_gap_threshold))  
     
     cap = cv2.VideoCapture(inference_input)
     cap.open(inference_input)
@@ -238,10 +251,10 @@ def infer_on_stream(args, client):
 
     # Create a video writer for the output video
     if not single_image_mode:
-        out_video = cv2.VideoWriter('out.mp4', cv2.VideoWriter_fourcc('m','p','4','v'), 30, (width,height))
+        out_video = cv2.VideoWriter('./output/out.mp4', cv2.VideoWriter_fourcc('m','p','4','v'), 30, (width,height))
 
     ### TODO: Loop until stream is over ###
-    print("Starting inferencing..")
+    #print("Starting inferencing..")
     while cap.isOpened():
 
         ### TODO: Read from the video capture ###
@@ -253,26 +266,29 @@ def infer_on_stream(args, client):
         #cv2.imshow('Frame',frame)
  
         ### TODO: Pre-process the image as needed ###
-        p_frame = cv2.resize(frame, (input_shape[3], input_shape[2]))
-        p_frame = p_frame.transpose((2,0,1))
-        p_frame = p_frame.reshape(1, *p_frame.shape)
-
+        preprossed_frame = cv2.resize(frame, (input_shape[3], input_shape[2]))
+        preprossed_frame = preprossed_frame.transpose((2,0,1))
+        preprossed_frame = preprossed_frame.reshape(1, *preprossed_frame.shape)
+        
         ### TODO: Start asynchronous inference for specified request ###
-        network_input = {'image_tensor': p_frame, 'image_info': p_frame.shape[1:]}
-        report_duration = None
+        network_input = {'image_tensor': preprossed_frame, 'image_info': preprossed_frame.shape[1:]}
+        #report_duration = None
         infer_start = time.time()
-        infer_network.exec_net(request_id = 0, network_input = network_input)
+        infer_network.exec_net(request_id = current_request_id, network_input = network_input)
+
+        frame_count = frame_count + 1
+        last_total_people_count = total_people_count
 
         ### TODO: Wait for the result ###
-        if infer_network.wait() == 0:
+        if infer_network.wait(current_request_id) == 0:
             person_count = 0
-
+            
             ### TODO: Get the results of the inference request ###
             infer_time_diff = time.time() - infer_start
-            output = infer_network.get_output()
+            output = infer_network.get_output(current_request_id)
 
             ### TODO: Extract any desired stats from the results ###
-            bounded_frame = draw_boxes(frame, output, prob_threshold, width, height)
+            bounded_frame = draw_bounding_boxes(frame, output, prob_threshold, width, height)
             infer_time_text = "Inference time: {:.3f}ms".format(infer_time_diff * 1000)
             bounded_frame = cv2.putText(bounded_frame, infer_time_text, (15,15), cv2.FONT_HERSHEY_COMPLEX,0.45, (255, 86, 0), 1)
 
@@ -281,33 +297,34 @@ def infer_on_stream(args, client):
             ### Topic "person": keys of "count" and "total" ###
             ### Topic "person/duration": key of "duration" ###
             current_people_count = person_count_per_frame(output,args.prob_threshold)
-            current_time = time.time()
-
             # run update function per frame
-            people_counter_update(current_people_count, current_time, time_gap_threshold)
+            people_counter_update(current_people_count, frame_count, time_gap_threshold)
+            #print("People count: " + str(current_people_count) + " Total count: "+ str(total_people_count) + " Last total count: " + str(last_total_people_count) + " Duration: " + str(total_duration) + " at frame: " + str(frame_count))
 
-            client.publish("person/duration", json.dumps({"duration" : 10}))
-            client.publish("person", json.dumps({"count" : 8, "total" : 8}))           
-            #client.publish("person", json.dumps({"count" : report_count, "total" : total_count}), qos = 0, retain = False)
-            #client.publish("person", json.dumps({"count" : report_count}), qos = 0, retain = False) 
-            #if report_duration is not None:
-            #    client.publish("person/duration", json.dumps({"duration" : report_duration}), qos = 0, retain = False)
-
+            # Publish current people count every frame        
+            client.publish("person", json.dumps({"count" : current_people_count}))
+            # if one person exited frame, publish total count & duration
+            if (last_total_people_count < total_people_count):
+                if last_total_people_count==0:
+                    client.publish("person/duration", json.dumps({"duration" : 0}))            
+                else:
+                    client.publish("person/duration", json.dumps({"duration" : total_duration})) # Work around UI counting problem          
+                    #print("Publiching average duration: " + str(total_duration/last_total_people_count) + " based on total: " + str(last_total_people_count))
         ### TODO: Send the frame to the FFMPEG server ###
             bounded_frame = cv2.resize(bounded_frame, (width, height))
-            #sys.stdout.buffer.write(bounded_frame)
-            #sys.stdout.flush()
-            cv2.imshow('Frame', bounded_frame)
+            sys.stdout.buffer.write(bounded_frame)
+            sys.stdout.flush()
+            #cv2.imshow('Frame', bounded_frame)
 
         ### TODO: Write an output image if `single_image_mode` ###
             if single_image_mode:
-                path = '.'
+                path = './output'
                 cv2.imwrite(os.path.join(path , output_file ), bounded_frame)
             else:
                 #print("Writing to video file")
                 out_video.write(bounded_frame)
 
-    print("Complete at: " + str(time.time()))
+    #print("Complete at: " + str(time.time()))
 
     # All done. Clean up
     out_video.release()
@@ -315,7 +332,6 @@ def infer_on_stream(args, client):
     cv2.destroyAllWindows()
     client.disconnect()
 
- 
 def main():
     """
     Load the network and parse the output.
