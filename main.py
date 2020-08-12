@@ -48,6 +48,7 @@ current_exit_time = 0
 total_duration = 0
 potential_exit = False
 frame_count = 0
+confirmed_exit = False
 
 # Time per frame in seconds based on ffmeg return of video file: ffmpeg -i <File>
 time_per_frame = 0.1
@@ -55,10 +56,12 @@ time_per_frame = 0.1
 def people_counter_update(count, frame_time, time_gap_threshold):
     """
     Update statistics per frame
+    
     To counter mis-detection, a predetermined time windows is used to test whther the
     disappearance of a people from frame is a real one. If a detection happens within
     the window that means the previous disappearance is a false one. Otherwise the
-    previous exit is counted as a real one.
+    pending exit is counted as a real one and duration will then be published to MTTQ. 
+    The width of the window is determined by the detection probablity threshold. 
   
     input: 
     count: count of people in current frame
@@ -74,6 +77,7 @@ def people_counter_update(count, frame_time, time_gap_threshold):
     global current_exit_time
     global total_duration
     global potential_exit
+    global confirmed_exit
 
     # Detected people entering frame
     if count > current_people_count:
@@ -83,7 +87,9 @@ def people_counter_update(count, frame_time, time_gap_threshold):
                 #print("Exceed time gap. Real entry")
                 potential_exit = False
                 total_people_count = total_people_count + count - current_people_count
-                total_duration = total_duration + (current_exit_time - current_entry_time)* time_per_frame 
+                #total_duration = total_duration + (current_exit_time - current_entry_time)* time_per_frame 
+                total_duration = (current_exit_time - current_entry_time)* time_per_frame
+                confirmed_exit = True
                 current_entry_time = frame_time
                 current_exit_time = None
             # else continue
@@ -105,7 +111,9 @@ def people_counter_update(count, frame_time, time_gap_threshold):
     else:
         if potential_exit and (frame_time - current_exit_time) > time_gap_threshold:
             potential_exit = False
-            total_duration = total_duration + (current_exit_time - current_entry_time)* time_per_frame
+            #total_duration = total_duration + (current_exit_time - current_entry_time)* time_per_frame
+            total_duration = (current_exit_time - current_entry_time)* time_per_frame
+            confirmed_exit = True
             current_exit_time = None
 
     # Update counter for people currently in frame
@@ -194,6 +202,7 @@ def infer_on_stream(args, client):
     :return: None
     """
     global frame_count
+    global confirmed_exit
 
     # use fixed request id
     current_request_id = 0
@@ -268,11 +277,15 @@ def infer_on_stream(args, client):
         ### TODO: Pre-process the image as needed ###
         preprossed_frame = cv2.resize(frame, (input_shape[3], input_shape[2]))
         preprossed_frame = preprossed_frame.transpose((2,0,1))
-        preprossed_frame = preprossed_frame.reshape(1, *preprossed_frame.shape)
+        b = 1
+        c = preprossed_frame.shape[0]
+        h = preprossed_frame.shape[1]
+        w = preprossed_frame.shape[2]
+        preprossed_frame = preprossed_frame.reshape(b, c, h, w)
         
         ### TODO: Start asynchronous inference for specified request ###
         network_input = {'image_tensor': preprossed_frame, 'image_info': preprossed_frame.shape[1:]}
-        #report_duration = None
+        
         infer_start = time.time()
         infer_network.exec_net(request_id = current_request_id, network_input = network_input)
 
@@ -303,12 +316,15 @@ def infer_on_stream(args, client):
 
             # Publish current people count every frame        
             client.publish("person", json.dumps({"count" : current_people_count}))
-            # if one person exited frame, publish total count & duration
-            if (last_total_people_count < total_people_count):
-                if last_total_people_count==0:
-                    client.publish("person/duration", json.dumps({"duration" : 0}))            
-                else:
-                    client.publish("person/duration", json.dumps({"duration" : total_duration})) # Work around UI counting problem          
+            # Because of the UI problem, i.e. total count will increase when duration is
+            # published, the duration is only published after a confirmed exit. That means
+            # the statistics in UI will be updated at a time after the actual exit happens
+            if confirmed_exit:
+                #if last_total_people_count==0:
+                #    client.publish("person/duration", json.dumps({"duration" : 0}))                           # else:
+                client.publish("person/duration", json.dumps({"duration" : total_duration})) # Work around UI counting problem
+                confirmed_exit = False
+          
                     #print("Publiching average duration: " + str(total_duration/last_total_people_count) + " based on total: " + str(last_total_people_count))
         ### TODO: Send the frame to the FFMPEG server ###
             bounded_frame = cv2.resize(bounded_frame, (width, height))

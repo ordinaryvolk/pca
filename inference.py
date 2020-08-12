@@ -104,10 +104,4 @@ class Network:
         ### Note: You may need to update the function parameters. ###
         return self.net_plugin.requests[request_id].outputs[self.output_blob]
 
-    def performance_counter(self, request_id):
-        """
-        Get performance counter 
-        """
-        perf_count = self.net_plugin.requests[request_id].get_perf_counts()
-        return perf_count
     

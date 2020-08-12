@@ -42,8 +42,8 @@ Camera focal/length: these would determine whether the video delivered to model 
 
 Conclusion:
 
-For this project I use my local setup. The OpenVino version I used is 2020 R4. So some of the OpenVino updates mentioned in the class apply here. The model I used is the public Tensorflow model faster_rcnn_inception_v2_coco which is downloaded using OpenVino model downloader. After converting to IR form I was able to use it for the app and it appears to work well. The app correctly detects the human in video and sent over to the browser. 
+For this project I use udacity workspace. The OpenVino version I used is 2019 R3. So some of the OpenVino updates mentioned in the class apply here. The model I used is the public Tensorflow model faster_rcnn_inception_v2_coco which is downloaded using OpenVino model downloader. After converting to IR form I was able to use it for the app and it appears to work well. The app correctly detects the human in video and sent over to the browser. 
 
 The results are stored in the "out" directory with a screenshot and a video file.
 
-One thing I did observe  is that though the video displayed correctly in the browser window, the statistics nevertheless stay unchanged. But I did observe the people count and other information are updated in MQTT server console window so I think this is likely an UI proble.  
+One thing I did observe  is that the MTTQ server subscription to total people count in UI doesn't behave as expected. It only increase when duration statistics is submitted. Consequently to display the correct total number and duration, I submit duration when a person is confirmed to exit the frame. Given the time it takes, the total number of people and average duration lags a little after the person exits. But is done so that I can work around the UI limitation that the average duration and total people count cannot be updated separately.  
